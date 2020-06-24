@@ -32,9 +32,9 @@ int HID_::getInterface(uint8_t* interfaceCount)
 	HIDDescriptor hidInterface = {
 		D_INTERFACE(pluggedInterface, 1, USB_DEVICE_CLASS_HUMAN_INTERFACE, HID_SUBCLASS_NONE, HID_PROTOCOL_NONE),
 		D_HIDREPORT(descriptorSize),
-		D_ENDPOINT(USB_ENDPOINT_IN(pluggedEndpoint), USB_ENDPOINT_TYPE_INTERRUPT, USB_EP_SIZE, 0x01)
+		D_ENDPOINT(USB_ENDPOINT_IN(pluggedEndpoint), USB_ENDPOINT_TYPE_INTERRUPT, EPX_SIZE, 0x01)
 	};
-	return USB_SendControl(0, &hidInterface, sizeof(hidInterface));
+	return USBDevice.sendControl(&hidInterface, sizeof(hidInterface));
 }
 
 int HID_::getDescriptor(USBSetup& setup)
@@ -48,17 +48,20 @@ int HID_::getDescriptor(USBSetup& setup)
 
 	int total = 0;
 	HIDSubDescriptor* node;
+	USBDevice.packMessages(true);
 	for (node = rootNode; node; node = node->next) {
-		int res = USB_SendControl(TRANSFER_PGM, node->data, node->length);
+		int res = USBDevice.sendControl(node->data, node->length);
 		if (res == -1)
 			return -1;
 		total += res;
 	}
-
+	USBDevice.packMessages(false);
+	/*
 	// Reset the protocol on reenumeration. Normally the host should not assume the state of the protocol
 	// due to the USB specs, but Windows and Linux just assumes its in report mode.
 	protocol = HID_REPORT_PROTOCOL;
-	
+	*/
+
 	return total;
 }
 
@@ -88,11 +91,10 @@ void HID_::AppendDescriptor(HIDSubDescriptor *node)
 
 int HID_::SendReport(uint8_t id, const void* data, int len)
 {
-	auto ret = USB_Send(pluggedEndpoint, &id, 1);
-	if (ret < 0) return ret;
-	auto ret2 = USB_Send(pluggedEndpoint | TRANSFER_RELEASE, data, len);
-	if (ret2 < 0) return ret2;
-	return ret + ret2;
+	uint8_t p[64];
+	p[0] = id;
+	memcpy(&p[1], data, len);
+	return USBDevice.send(pluggedEndpoint, p, len+1);
 }
 
 bool HID_::setup(USBSetup& setup)
@@ -115,7 +117,8 @@ bool HID_::setup(USBSetup& setup)
 			return true;
 		}
 		if (request == HID_GET_IDLE) {
-			// TODO: Send8(idle);
+			USBDevice.armSend(0, &idle, 1);
+			return true;
 		}
 	}
 
@@ -150,7 +153,7 @@ HID_::HID_(void) : PluggableUSBModule(1, 1, epType),
                    rootNode(NULL), descriptorSize(0),
                    protocol(HID_REPORT_PROTOCOL), idle(1)
 {
-	epType[0] = EP_TYPE_INTERRUPT_IN;
+	epType[0] = USB_ENDPOINT_TYPE_INTERRUPT | USB_ENDPOINT_IN(0);;
 	PluggableUSB().plug(this);
 }
 
