@@ -16,7 +16,7 @@
    SOFTWARE.
  */
 
-#include "HID.h"
+#include "USBDISP.h"
 
 #if defined(USBCON)
 
