@@ -1,6 +1,5 @@
 /*
-   Copyright (c) 2015, Arduino LLC
-   Original code (pre-library): Copyright (c) 2011, Peter Barrett
+   Copyright (c) 2020, Seeed Studio
 
    Permission to use, copy, modify, and/or distribute this software for
    any purpose with or without fee is hereby granted, provided that the
@@ -20,84 +19,58 @@
 
 #if defined(USBCON)
 
-HID_& HID()
+USBDISP_& USBDISP()
 {
-	static HID_ obj;
+	static USBDISP_ obj;
 	return obj;
 }
 
-int HID_::getInterface(uint8_t* interfaceCount)
+int USBDISP_::getInterface(uint8_t* interfaceCount)
 {
 	*interfaceCount += 1; // uses 1
-	HIDDescriptor hidInterface = {
-		D_INTERFACE(pluggedInterface, 1, USB_DEVICE_CLASS_HUMAN_INTERFACE, HID_SUBCLASS_NONE, HID_PROTOCOL_NONE),
-		D_HIDREPORT(descriptorSize),
-		D_ENDPOINT(USB_ENDPOINT_IN(pluggedEndpoint), USB_ENDPOINT_TYPE_INTERRUPT, EPX_SIZE, 0x01)
+	USBDISPDescriptor dispInterface = {
+		D_INTERFACE(pluggedInterface, 2, USB_INTERFACE_DISP_CLASS, USB_INTERFACE_DISP_SUBCLASS, USB_INTERFACE_PROTOCOL_NONE),
+		D_ENDPOINT(USB_ENDPOINT_OUT(pluggedEndpoint),    USB_ENDPOINT_TYPE_BULK,      EPX_SIZE, 0x01),
+		D_ENDPOINT(USB_ENDPOINT_IN(pluggedEndpoint + 1), USB_ENDPOINT_TYPE_INTERRUPT, 32,       0x05),
 	};
-	return USBDevice.sendControl(&hidInterface, sizeof(hidInterface));
+	return USBDevice.sendControl(&dispInterface, sizeof(dispInterface));
 }
 
-int HID_::getDescriptor(USBSetup& setup)
+int USBDISP_::getDescriptor(USBSetup& setup)
 {
-	// Check if this is a HID Class Descriptor request
+	// Check if this is a USBDISP Class Descriptor request
 	if (setup.bmRequestType != REQUEST_DEVICETOHOST_STANDARD_INTERFACE) { return 0; }
-	if (setup.wValueH != HID_REPORT_DESCRIPTOR_TYPE) { return 0; }
 
-	// In a HID Class Descriptor wIndex cointains the interface number
+	// In a USBDISP Class Descriptor wIndex cointains the interface number
 	if (setup.wIndex != pluggedInterface) { return 0; }
 
 	int total = 0;
-	HIDSubDescriptor* node;
-	USBDevice.packMessages(true);
-	for (node = rootNode; node; node = node->next) {
-		int res = USBDevice.sendControl(node->data, node->length);
-		if (res == -1)
-			return -1;
-		total += res;
-	}
-	USBDevice.packMessages(false);
 	/*
-	// Reset the protocol on reenumeration. Normally the host should not assume the state of the protocol
-	// due to the USB specs, but Windows and Linux just assumes its in report mode.
-	protocol = HID_REPORT_PROTOCOL;
+	USBDevice.packMessages(true);
+	int res = USBDevice.sendControl(thisDesc, thisDescLength);
+	if (res == -1)
+		return -1;
+	total += res;
+	USBDevice.packMessages(false);
 	*/
-
 	return total;
 }
 
-uint8_t HID_::getShortName(char *name)
+int USBDISP_::eventRun(void) {
+	return 0;
+}
+
+uint8_t USBDISP_::getShortName(char *name)
 {
 	name[0] = 'H';
 	name[1] = 'I';
 	name[2] = 'D';
-	name[3] = 'A' + (descriptorSize & 0x0F);
-	name[4] = 'A' + ((descriptorSize >> 4) & 0x0F);
+	name[3] = 'A' + pluggedInterface;
+	name[4] = 'A' + pluggedEndpoint;
 	return 5;
 }
 
-void HID_::AppendDescriptor(HIDSubDescriptor *node)
-{
-	if (!rootNode) {
-		rootNode = node;
-	} else {
-		HIDSubDescriptor *current = rootNode;
-		while (current->next) {
-			current = current->next;
-		}
-		current->next = node;
-	}
-	descriptorSize += node->length;
-}
-
-int HID_::SendReport(uint8_t id, const void* data, int len)
-{
-	uint8_t p[64];
-	p[0] = id;
-	memcpy(&p[1], data, len);
-	return USBDevice.send(pluggedEndpoint, p, len+1);
-}
-
-bool HID_::setup(USBSetup& setup)
+bool USBDISP_::setup(USBSetup& setup)
 {
 	if (pluggedInterface != setup.wIndex) {
 		return false;
@@ -108,56 +81,23 @@ bool HID_::setup(USBSetup& setup)
 
 	if (requestType == REQUEST_DEVICETOHOST_CLASS_INTERFACE)
 	{
-		if (request == HID_GET_REPORT) {
-			// TODO: HID_GetReport();
-			return true;
-		}
-		if (request == HID_GET_PROTOCOL) {
-			// TODO: Send8(protocol);
-			return true;
-		}
-		if (request == HID_GET_IDLE) {
-			USBDevice.armSend(0, &idle, 1);
-			return true;
-		}
 	}
 
 	if (requestType == REQUEST_HOSTTODEVICE_CLASS_INTERFACE)
 	{
-		if (request == HID_SET_PROTOCOL) {
-			// The USB Host tells us if we are in boot or report mode.
-			// This only works with a real boot compatible device.
-			protocol = setup.wValueL;
-			return true;
-		}
-		if (request == HID_SET_IDLE) {
-			idle = setup.wValueL;
-			return true;
-		}
-		if (request == HID_SET_REPORT)
-		{
-			//uint8_t reportID = setup.wValueL;
-			//uint16_t length = setup.wLength;
-			//uint8_t data[length];
-			// Make sure to not read more data than USB_EP_SIZE.
-			// You can read multiple times through a loop.
-			// The first byte (may!) contain the reportID on a multreport.
-			//USB_RecvControl(data, length);
-		}
 	}
 
 	return false;
 }
 
-HID_::HID_(void) : PluggableUSBModule(1, 1, epType),
-                   rootNode(NULL), descriptorSize(0),
-                   protocol(HID_REPORT_PROTOCOL), idle(1)
+USBDISP_::USBDISP_(void) : PluggableUSBModule(2, 1, epType), idle(1)
 {
-	epType[0] = USB_ENDPOINT_TYPE_INTERRUPT | USB_ENDPOINT_IN(0);;
+	epType[0] = USB_ENDPOINT_TYPE_BULK      | USB_ENDPOINT_OUT(0);
+	epType[1] = USB_ENDPOINT_TYPE_INTERRUPT | USB_ENDPOINT_IN(0);
 	PluggableUSB().plug(this);
 }
 
-int HID_::begin(void)
+int USBDISP_::begin(void)
 {
 	return 0;
 }
