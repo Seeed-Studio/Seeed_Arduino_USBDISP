@@ -16,8 +16,23 @@
  */
 
 #include "USBDISP.h"
+#include "rpusbdisp_protocol.h"
+
+#include "SPI.h"
+#include "TFT_eSPI.h"
+
+// Use hardware SPI
+TFT_eSPI tft = TFT_eSPI();
 
 #if defined(USBCON)
+
+static rpusbdisp_status_normal_packet_t usbdisp_status[1] = {
+	0x00,  // Packet Type
+	RPUSBDISP_DISPLAY_STATUS_DIRTY_FLAG,
+	RPUSBDISP_TOUCH_STATUS_NO_TOUCH,
+	0x0U,
+	0x0U,
+};
 
 USBDISP_& USBDISP()
 {
@@ -56,18 +71,96 @@ int USBDISP_::getDescriptor(USBSetup& setup)
 	return total;
 }
 
-int USBDISP_::eventRun(void) {
+#define LINEBUF_SZ (TFT_HEIGHT << 1)
+static uint8_t linebuf[LINEBUF_SZ];
+static int linepos = 0;
+static union {
+	uint8_t epbuf[LINEBUF_SZ];
+	rpusbdisp_disp_packet_header_t   hdr;
+	rpusbdisp_disp_fill_packet_t     fill;
+	rpusbdisp_disp_bitblt_packet_t   bblt;
+	rpusbdisp_disp_fillrect_packet_t rect;
+	rpusbdisp_disp_copyarea_packet_t copy;
+} ucmd[1];
+
+static uint8_t* const bulkbuf = &ucmd->epbuf[0];
+static int bulkpos = 0;
+
+static int parse_bitblt(int ep) {
+	static rpusbdisp_disp_bitblt_packet_t bb[1];
+	unsigned load;
+
+	*bb = ucmd->bblt;
+
+	tft.setAddrWindow(bb->x, bb->y, bb->width, bb->height);
+	tft.startWrite();
+
+	int sz;
+
+	if (bulkpos > sizeof ucmd->bblt) {
+		sz = bulkpos - sizeof ucmd->bblt;
+		tft.pushColors(&bulkbuf[sizeof ucmd->bblt], sz);
+	}
+
+	for (load = bb->width * bb->height * 2/*RGB565*/; load;) {
+		int sz;
+
+		if ((sz = USBDevice.available(ep)) == 0) {
+			continue;
+		}
+
+		sz = min(sz, EPX_SIZE);
+		sz = USBDevice.recv(ep, bulkbuf, sz);
+		if (*bulkbuf != RPUSBDISP_DISPCMD_BITBLT) {
+			printf("BITBLT data sync error 0\r\n");
+			break;
+		}
+		tft.pushColors(&bulkbuf[1], --sz);
+		load -= sz;
+	}
+	tft.endWrite();
+
+	if (bb->header.cmd_flag & RPUSBDISP_CMD_FLAG_CLEARDITY) {
+		usbdisp_status->display_status &= ~RPUSBDISP_DISPLAY_STATUS_DIRTY_FLAG;
+	}
 	return 0;
 }
 
-uint8_t USBDISP_::getShortName(char *name)
-{
-	name[0] = 'H';
-	name[1] = 'I';
-	name[2] = 'D';
-	name[3] = 'A' + pluggedInterface;
-	name[4] = 'A' + pluggedEndpoint;
-	return 5;
+int USBDISP_::eventRun(void) {
+	uint32_t av;
+
+	while ((av = USBDevice.available(pluggedEndpoint))) {
+		av = min(av, EPX_SIZE);
+		USBDevice.recv(pluggedEndpoint, bulkbuf + bulkpos, av);
+		bulkpos += av;
+
+		if (!(*bulkbuf & RPUSBDISP_CMD_FLAG_START)) {
+			bulkpos = 0;
+			printf("Parse error cmd start\r\n");
+		}
+
+		switch (*bulkbuf & RPUSBDISP_CMD_MASK) {
+		case RPUSBDISP_DISPCMD_NOPE:
+		case RPUSBDISP_DISPCMD_FILL:
+			break;
+
+		case RPUSBDISP_DISPCMD_BITBLT:
+			if (bulkpos < sizeof ucmd->bblt) continue;
+			parse_bitblt(pluggedEndpoint);
+			break;
+
+		case RPUSBDISP_DISPCMD_RECT:
+		case RPUSBDISP_DISPCMD_COPY_AREA:
+		case RPUSBDISP_DISPCMD_BITBLT_RLE:
+			break;
+
+		default:
+			printf("Parse error cmd start 2\r\n");
+			linepos = 0;
+			break;
+		}
+	}
+	return 0;
 }
 
 bool USBDISP_::setup(USBSetup& setup)
@@ -99,6 +192,14 @@ USBDISP_::USBDISP_(void) : PluggableUSBModule(2, 1, epType), idle(1)
 
 int USBDISP_::begin(void)
 {
+	// Initial notify
+	// Screen image are out of sync from power up
+	USBDevice.send(pluggedEndpoint + 1, usbdisp_status, sizeof usbdisp_status);
+
+	tft.init();
+	// Plot with 90 deg. clockwise rotation
+	// Required a 320x240 screen, not a 240x320.
+	tft.setRotation(1);
 	return 0;
 }
 
