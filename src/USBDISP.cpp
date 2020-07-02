@@ -71,10 +71,13 @@ int USBDISP_::getDescriptor(USBSetup& setup)
 	return total;
 }
 
-#define LINEBUF_SZ (TFT_HEIGHT << 1)
-static uint8_t linebuf[LINEBUF_SZ];
-static int linepos = 0;
+#define USE_FRAME_BUFF 1
+#if USE_FRAME_BUFF
+static uint8_t frame_buff[ TFT_WIDTH * TFT_HEIGHT * 2 ];
+static int frame_sz = 0;
+#endif
 static union {
+	#define LINEBUF_SZ (TFT_HEIGHT << 1)
 	uint8_t epbuf[LINEBUF_SZ];
 	rpusbdisp_disp_packet_header_t   hdr;
 	rpusbdisp_disp_fill_packet_t     fill;
@@ -97,14 +100,21 @@ static int parse_bitblt(int ep) {
 
 	int sz;
 
+	#if USE_FRAME_BUFF
+	frame_sz = 0;
+	#endif
+
 	if (bulkpos > sizeof ucmd->bblt) {
 		sz = bulkpos - sizeof ucmd->bblt;
+		#if USE_FRAME_BUFF
+		memcpy(&frame_buff[frame_sz], &bulkbuf[sizeof ucmd->bblt], sz);
+		frame_sz += sz;
+		#else
 		tft.pushColors(&bulkbuf[sizeof ucmd->bblt], sz);
+		#endif
 	}
 
 	for (load = bb->width * bb->height * 2/*RGB565*/; load;) {
-		int sz;
-
 		if ((sz = USBDevice.available(ep)) == 0) {
 			continue;
 		}
@@ -115,9 +125,28 @@ static int parse_bitblt(int ep) {
 			printf("BITBLT data sync error 0\r\n");
 			break;
 		}
-		tft.pushColors(&bulkbuf[1], --sz);
+		// skip header
+		--sz;
+		#if USE_FRAME_BUFF
+		memcpy(&frame_buff[frame_sz], &bulkbuf[1], sz);
+		frame_sz += sz;
+		#else
+		tft.pushColors(&bulkbuf[1], sz);
+		#endif
+
 		load -= sz;
 	}
+
+	#if USE_FRAME_BUFF
+	for (sz = 0; sz < frame_sz; sz += bb->width) {
+		tft.pushColors(&frame_buff[sz], bb->width);
+		if (USBDevice.available(ep)) {
+			// This ignore remain colors
+			// make USB Host more stable
+			// break;
+		}
+	}
+	#endif
 	tft.endWrite();
 
 	if (bb->header.cmd_flag & RPUSBDISP_CMD_FLAG_CLEARDITY) {
@@ -156,7 +185,7 @@ int USBDISP_::eventRun(void) {
 
 		default:
 			printf("Parse error cmd start 2\r\n");
-			linepos = 0;
+			bulkpos = 0;
 			break;
 		}
 	}
