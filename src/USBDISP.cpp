@@ -73,9 +73,10 @@ int USBDISP_::getDescriptor(USBSetup& setup)
 
 #define USE_FRAME_BUFF 1
 #if USE_FRAME_BUFF
-static uint8_t frame_buff[ TFT_WIDTH * TFT_HEIGHT * 2 ];
-static int frame_sz = 0;
+static __attribute__((__aligned__(4))) uint8_t frame_buff[ TFT_WIDTH * TFT_HEIGHT * 2 ] ;
 #endif
+static int frame_sz = 0; // in bytes
+
 static union {
 	#define LINEBUF_SZ (TFT_HEIGHT << 1)
 	uint8_t epbuf[LINEBUF_SZ];
@@ -89,30 +90,48 @@ static union {
 static uint8_t* const bulkbuf = &ucmd->epbuf[0];
 static int bulkpos = 0;
 
-static int parse_bitblt(int ep) {
+static int bitblt_append_data(int rle, uint8_t* dptr, int sz) {
+	static uint16_t the_pixel;
+	int r = 0;
+
+	if (!rle) {
+		#if USE_FRAME_BUFF
+		memcpy(&frame_buff[frame_sz], dptr, sz);
+		frame_sz += sz;
+		#else
+
+		for (int i = 0; i < sz; i++) {
+			if (++frame_sz & 0x1U) {
+				the_pixel  = dptr[i] << 0;
+			} else {
+				the_pixel |= dptr[i] << 8;
+				tft.pushColor(the_pixel);
+			}
+		}
+
+		#endif
+		return sz;
+	}
+	return r;
+}
+
+static int parse_bitblt(int ep, int rle) {
 	static rpusbdisp_disp_bitblt_packet_t bb[1];
 	unsigned load;
+	int sz;
 
 	*bb = ucmd->bblt;
 
 	tft.setAddrWindow(bb->x, bb->y, bb->width, bb->height);
 	tft.startWrite();
 
-	int sz;
-
-	#if USE_FRAME_BUFF
 	frame_sz = 0;
-	#endif
 
 	load = bb->width * bb->height * 2/*RGB565*/;
+
 	if (bulkpos > sizeof ucmd->bblt) {
 		sz = bulkpos - sizeof ucmd->bblt;
-		#if USE_FRAME_BUFF
-		memcpy(&frame_buff[frame_sz], &bulkbuf[sizeof ucmd->bblt], sz);
-		frame_sz += sz;
-		#else
-		tft.pushColors(&bulkbuf[sizeof ucmd->bblt], sz);
-		#endif
+		sz = bitblt_append_data(rle, &bulkbuf[sizeof ucmd->bblt], sz);
 		load -= sz;
 	}
 
@@ -124,24 +143,29 @@ static int parse_bitblt(int ep) {
 		sz = min(sz, EPX_SIZE);
 		sz = USBDevice.recv(ep, bulkbuf, sz);
 		if (*bulkbuf != RPUSBDISP_DISPCMD_BITBLT) {
-			printf("BITBLT data sync error 0\r\n");
+			printf("BB SYNC ERR #0\r\n");
 			break;
 		}
+
 		// skip header
 		--sz;
-		#if USE_FRAME_BUFF
-		memcpy(&frame_buff[frame_sz], &bulkbuf[1], sz);
-		frame_sz += sz;
-		#else
-		tft.pushColors(&bulkbuf[1], sz);
-		#endif
+		sz = bitblt_append_data(rle, &bulkbuf[1], sz);
 
 		load -= sz;
 	}
 
 	#if USE_FRAME_BUFF
-	for (sz = 0; sz < frame_sz; sz += bb->width) {
-		tft.pushColors(&frame_buff[sz], bb->width);
+	for (sz = 0; sz < frame_sz; sz += bb->width << 1) {
+		/*
+		 * pushColors argument swap = true is ineffective.
+		 */
+		for (int i = 0; i < (bb->width << 1); i += 2) {
+			uint8_t* ptr = &frame_buff[sz + i];
+			uint8_t pix = *ptr;
+			*ptr = ptr[1];
+			ptr[1] = pix;
+		}
+		tft.pushColors((uint16_t*)&frame_buff[sz], bb->width, false);
 		if (USBDevice.available(ep)) {
 			// This ignore remain colors
 			// make USB Host more stable
@@ -154,11 +178,15 @@ static int parse_bitblt(int ep) {
 	if (bb->header.cmd_flag & RPUSBDISP_CMD_FLAG_CLEARDITY) {
 		usbdisp_status->display_status &= ~RPUSBDISP_DISPLAY_STATUS_DIRTY_FLAG;
 	}
+
+	// Screen image are out of sync from power up
+	USBDevice.send(ep + 1, usbdisp_status, sizeof usbdisp_status);
 	return 0;
 }
 
 int USBDISP_::eventRun(void) {
 	uint32_t av;
+	int mode_rle;
 
 	while ((av = USBDevice.available(pluggedEndpoint))) {
 		av = min(av, EPX_SIZE);
@@ -167,26 +195,29 @@ int USBDISP_::eventRun(void) {
 
 		if (!(*bulkbuf & RPUSBDISP_CMD_FLAG_START)) {
 			bulkpos = 0;
-			printf("Parse error cmd start\r\n");
+			printf("Parse ERR#1\r\n");
 		}
 
+		mode_rle = 0;
 		switch (*bulkbuf & RPUSBDISP_CMD_MASK) {
 		case RPUSBDISP_DISPCMD_NOPE:
 		case RPUSBDISP_DISPCMD_FILL:
 			break;
 
+		case RPUSBDISP_DISPCMD_BITBLT_RLE:
+			mode_rle = 1;
+			/* intentional fall-through */
 		case RPUSBDISP_DISPCMD_BITBLT:
 			if (bulkpos < sizeof ucmd->bblt) continue;
-			parse_bitblt(pluggedEndpoint);
+			parse_bitblt(pluggedEndpoint, mode_rle);
 			break;
 
 		case RPUSBDISP_DISPCMD_RECT:
 		case RPUSBDISP_DISPCMD_COPY_AREA:
-		case RPUSBDISP_DISPCMD_BITBLT_RLE:
 			break;
 
 		default:
-			printf("Parse error cmd start 2\r\n");
+			printf("Parse ERR#2\r\n");
 			bulkpos = 0;
 			break;
 		}
@@ -223,7 +254,7 @@ USBDISP_::USBDISP_(void) : PluggableUSBModule(2, 1, epType), idle(1)
 
 int USBDISP_::begin(void)
 {
-	// Initial notify
+	// Initial notify, not works yet
 	// Screen image are out of sync from power up
 	USBDevice.send(pluggedEndpoint + 1, usbdisp_status, sizeof usbdisp_status);
 
