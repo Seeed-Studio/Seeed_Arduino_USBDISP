@@ -104,6 +104,7 @@ static int parse_bitblt(int ep) {
 	frame_sz = 0;
 	#endif
 
+	load = bb->width * bb->height * 2/*RGB565*/;
 	if (bulkpos > sizeof ucmd->bblt) {
 		sz = bulkpos - sizeof ucmd->bblt;
 		#if USE_FRAME_BUFF
@@ -112,9 +113,10 @@ static int parse_bitblt(int ep) {
 		#else
 		tft.pushColors(&bulkbuf[sizeof ucmd->bblt], sz);
 		#endif
+		load -= sz;
 	}
 
-	for (load = bb->width * bb->height * 2/*RGB565*/; load;) {
+	for (; load;) {
 		if ((sz = USBDevice.available(ep)) == 0) {
 			continue;
 		}
