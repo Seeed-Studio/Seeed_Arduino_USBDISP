@@ -79,7 +79,7 @@ int USBDISP_::getDescriptor(USBSetup& setup)
 #if USE_FRAME_BUFF
 static __attribute__((__aligned__(4))) uint8_t frame_buff[ TFT_WIDTH * TFT_HEIGHT * 2 ] ;
 #endif
-static int frame_pos = 0; // in bytes
+static volatile int frame_pos = 0; // in bytes
 static int frame_sz  = 0; // in bytes
 
 static union {
@@ -93,7 +93,7 @@ static union {
 } ucmd[1];
 
 static uint8_t* const bulkbuf = &ucmd->epbuf[0];
-static int bulkpos = 0;
+static volatile int bulkpos = 0;
 
 static RingBufferN<32768> backbuf;
 
@@ -239,19 +239,22 @@ static int bitblt_append_data(int rle, uint8_t* dptr, int sz) {
 static int parse_bitblt(int ep, int rle) {
 	static rpusbdisp_disp_bitblt_packet_t bb[1];
 	unsigned load;
+	/*
+	#define TIMEOUT_MAX 10000000
+	volatile unsigned timeout = TIMEOUT_MAX;
+	*/
 	int sz;
 
 	*bb = ucmd->bblt;
 
-	tft.setAddrWindow(bb->x, bb->y, bb->width, bb->height);
-	tft.startWrite();
-
+	load = bb->width * bb->height * 2/*RGB565*/;
+	frame_sz = load;
 	frame_pos = 0;
 
 	rle_len = rle_pos = 0;
 
-	load = bb->width * bb->height * 2/*RGB565*/;
-	frame_sz = load;
+	tft.setAddrWindow(bb->x, bb->y, bb->width, bb->height);
+	tft.startWrite();
 
 	if (bulkpos > sizeof ucmd->bblt) {
 		sz = bulkpos - sizeof ucmd->bblt;
@@ -266,9 +269,13 @@ static int parse_bitblt(int ep, int rle) {
 
 		sz = min(sz, EPX_SIZE - bulkpos);
 		bulkpos += usbBackRead(ep, bulkbuf + bulkpos, sz);
-		if (load > bulkpos && bulkpos < EPX_SIZE) {
+		/*
+		// Bug, will block the USB receiving
+		if (--timeout != 0 && bulkpos < EPX_SIZE) {
 			continue;
 		}
+		timeout = TIMEOUT_MAX;
+		*/
 		bulkpos = 0;
 
 		if (!rle && *bulkbuf != RPUSBDISP_DISPCMD_BITBLT
@@ -316,14 +323,24 @@ int USBDISP_::eventRun(void) {
 	uint32_t av;
 	int mode_rle;
 
-	while ((av = usbBackAvail(pluggedEndpoint))) {
-		av = min(av, EPX_SIZE);
-		usbBackRead(pluggedEndpoint, bulkbuf + bulkpos, av);
+	/*
+	 * #.3 cooperate with #.4, drop packet only has a broken header.
+	 */
+	/*
+	if (bulkpos != 0)
+		printf("bulkpos = %d\r\n",  bulkpos);
+	*/
+	bulkpos = 0;
+_repeat:
+	if /*while*/ ((av = usbBackAvail(pluggedEndpoint))) {
+		av = min(av, EPX_SIZE - bulkpos);
+		av = usbBackRead(pluggedEndpoint, bulkbuf + bulkpos, av);
 		bulkpos += av;
+		__DMB();
 
 		if (!(*bulkbuf & RPUSBDISP_CMD_FLAG_START)) {
 			bulkpos = 0;
-			printf("Parse ERR#1\r\n");
+			goto _repeat;
 		}
 
 		mode_rle = 0;
@@ -336,7 +353,11 @@ int USBDISP_::eventRun(void) {
 			mode_rle = 1;
 			/* intentional fall-through */
 		case RPUSBDISP_DISPCMD_BITBLT:
-			if (bulkpos < sizeof ucmd->bblt) continue;
+			/* #.4 */
+			if (bulkpos < sizeof ucmd->bblt) {
+				printf("<%d\r\n", bulkpos);
+				goto _repeat;
+			}
 			parse_bitblt(pluggedEndpoint, mode_rle);
 			break;
 
@@ -346,9 +367,9 @@ int USBDISP_::eventRun(void) {
 
 		default:
 			printf("Parse ERR#2\r\n");
-			bulkpos = 0;
 			break;
 		}
+		bulkpos = 0;
 	}
 
 	// Prevent missing USB DATA in the process
