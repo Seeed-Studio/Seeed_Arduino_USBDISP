@@ -172,6 +172,10 @@ static int bitblt_append_data(int rle, uint8_t* dptr, int sz) {
 
 	// decompress RLE DATA
 	for (i = 0; i < sz; i++) {
+		if (frame_pos >= frame_sz) {
+			break;
+		}
+
 		if (rle_pos >= rle_len) {
 			// rle header char
 			rle_len = ((dptr[i] & RPUSBDISP_RLE_BLOCKFLAG_SIZE_BIT) + 1) << 1;
@@ -223,10 +227,6 @@ static int bitblt_append_data(int rle, uint8_t* dptr, int sz) {
 		}
 		#endif
 		r++;
-
-		if (frame_pos >= frame_sz) {
-			break;
-		}
 	}
 
 	/* remain chars unprocessed */
