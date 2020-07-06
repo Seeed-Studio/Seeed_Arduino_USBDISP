@@ -1,5 +1,11 @@
 /*
-   Copyright (c) 2020, Seeed Studio
+   Copyright (c) 2020, Seeed Studio.  All right reserved.
+
+   Arduino Setting:
+      CPU Speed: 200 MHz
+      Optimize : Small (-Os)
+      USB Stack: Arduino
+      Debug    : On // printf message will output to RPI compatible UART
 
    Permission to use, copy, modify, and/or distribute this software for
    any purpose with or without fee is hereby granted, provided that the
@@ -279,7 +285,7 @@ static int parse_bitblt(int ep, int rle) {
 		if (!rle && *bulkbuf != RPUSBDISP_DISPCMD_BITBLT
 		||   rle && *bulkbuf != RPUSBDISP_DISPCMD_BITBLT_RLE
 		) {
-			printf("BB SYNC ERR #0\r\n");
+			printf("BBE#0\r\n");
 			break;
 		}
 
@@ -292,10 +298,12 @@ static int parse_bitblt(int ep, int rle) {
 
 	#if USE_FRAME_BUFF
 	for (sz = 0; sz < frame_pos; sz += bb->width << 1) {
+		int i;
 		/*
-		 * pushColors argument swap = true is ineffective.
+		 * pushColors 16 bit pixel MSB first,
+		 * and argument swap = true is ineffective.
 		 */
-		for (int i = 0; i < (bb->width << 1); i += 2) {
+		for (i = 0; i < (bb->width << 1); i += 2) {
 			uint8_t* ptr = &frame_buff[sz + i];
 			uint8_t pix = *ptr;
 			*ptr = ptr[1];
@@ -337,6 +345,7 @@ _repeat:
 		__DMB();
 
 		if (!(*bulkbuf & RPUSBDISP_CMD_FLAG_START)) {
+			printf("PE#1:%d\r\n", bulkpos);
 			bulkpos = 0;
 			goto _repeat;
 		}
@@ -345,6 +354,7 @@ _repeat:
 		switch (*bulkbuf & RPUSBDISP_CMD_MASK) {
 		case RPUSBDISP_DISPCMD_NOPE:
 		case RPUSBDISP_DISPCMD_FILL:
+			printf("F\r\n");
 			break;
 
 		case RPUSBDISP_DISPCMD_BITBLT_RLE:
@@ -361,10 +371,11 @@ _repeat:
 
 		case RPUSBDISP_DISPCMD_RECT:
 		case RPUSBDISP_DISPCMD_COPY_AREA:
+			printf("R\r\n");
 			break;
 
 		default:
-			printf("Parse ERR#2\r\n");
+			printf("PE#2:%d\r\n", *bulkbuf);
 			break;
 		}
 		bulkpos = 0;
