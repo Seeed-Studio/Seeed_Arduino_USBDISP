@@ -75,7 +75,7 @@ int USBDISP_::getDescriptor(USBSetup& setup)
 #if USE_FRAME_BUFF
 static __attribute__((__aligned__(4))) uint8_t frame_buff[ TFT_WIDTH * TFT_HEIGHT * 2 ] ;
 #endif
-static int frame_sz = 0; // in bytes
+static int frame_pos = 0; // in bytes
 
 static union {
 	#define LINEBUF_SZ (TFT_HEIGHT << 1)
@@ -99,12 +99,12 @@ static int bitblt_append_data(int rle, uint8_t* dptr, int sz) {
 
 	if (!rle) {
 		#if USE_FRAME_BUFF
-		memcpy(&frame_buff[frame_sz], dptr, sz);
-		frame_sz += sz;
+		memcpy(&frame_buff[frame_pos], dptr, sz);
+		frame_pos += sz;
 		#else
 
 		for (i = 0; i < sz; i++) {
-			if (++frame_sz & 0x1U) {
+			if (++frame_pos & 0x1U) {
 				the_pixel  = dptr[i] << 0;
 			} else {
 				the_pixel |= dptr[i] << 8;
@@ -141,8 +141,8 @@ static int bitblt_append_data(int rle, uint8_t* dptr, int sz) {
 
 				for (int k = 0; k < rle_len >> 1; k++) {
 					#if USE_FRAME_BUFF
-					frame_buff[frame_sz++] = (uint8_t)(the_pixel >> 0);
-					frame_buff[frame_sz++] = (uint8_t)(the_pixel >> 8);
+					frame_buff[frame_pos++] = (uint8_t)(the_pixel >> 0);
+					frame_buff[frame_pos++] = (uint8_t)(the_pixel >> 8);
 					#else
 					tft.pushColor(the_pixel);
 					#endif
@@ -157,7 +157,7 @@ static int bitblt_append_data(int rle, uint8_t* dptr, int sz) {
 
 		// normal color part
 		#if USE_FRAME_BUFF
-		frame_buff[frame_sz++] = dptr[i];
+		frame_buff[frame_pos++] = dptr[i];
 		#else
 		tft.pushColors(&dptr[i], 1);
 		#endif
@@ -176,7 +176,7 @@ static int parse_bitblt(int ep, int rle) {
 	tft.setAddrWindow(bb->x, bb->y, bb->width, bb->height);
 	tft.startWrite();
 
-	frame_sz = 0;
+	frame_pos = 0;
 
 	rle_len = rle_pos = 0;
 
@@ -215,7 +215,7 @@ static int parse_bitblt(int ep, int rle) {
 	}
 
 	#if USE_FRAME_BUFF
-	for (sz = 0; sz < frame_sz; sz += bb->width << 1) {
+	for (sz = 0; sz < frame_pos; sz += bb->width << 1) {
 		/*
 		 * pushColors argument swap = true is ineffective.
 		 */
