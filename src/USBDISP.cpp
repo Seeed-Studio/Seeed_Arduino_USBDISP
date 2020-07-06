@@ -90,9 +90,12 @@ static union {
 static uint8_t* const bulkbuf = &ucmd->epbuf[0];
 static int bulkpos = 0;
 
+static int rle_len, rle_pos;
+
 static int bitblt_append_data(int rle, uint8_t* dptr, int sz) {
+	static int rle_comn = 0;
 	static uint16_t the_pixel;
-	int r = 0;
+	int i, r = 0;
 
 	if (!rle) {
 		#if USE_FRAME_BUFF
@@ -100,7 +103,7 @@ static int bitblt_append_data(int rle, uint8_t* dptr, int sz) {
 		frame_sz += sz;
 		#else
 
-		for (int i = 0; i < sz; i++) {
+		for (i = 0; i < sz; i++) {
 			if (++frame_sz & 0x1U) {
 				the_pixel  = dptr[i] << 0;
 			} else {
@@ -111,6 +114,54 @@ static int bitblt_append_data(int rle, uint8_t* dptr, int sz) {
 
 		#endif
 		return sz;
+	}
+
+	for (i = 0; i < sz; i++) {
+		if (rle_pos >= rle_len) {
+			// rle header char
+			rle_len = ((dptr[i] & RPUSBDISP_RLE_BLOCKFLAG_SIZE_BIT) + 1) << 1;
+			rle_comn = !!(dptr[i] & RPUSBDISP_RLE_BLOCKFLAG_COMMON_BIT);
+
+			rle_pos = 0;
+			if (rle_comn) {
+				// common section only have a single color
+				// 2 Bytes (RGB565)
+				rle_pos = rle_len - 2;
+			}
+			continue;
+		}
+
+		// rle content char
+		++rle_pos;
+
+		if (rle_comn) {
+			if (rle_pos >= rle_len) {
+				// upper color part
+				the_pixel |= dptr[i] << 8;
+
+				for (int k = 0; k < rle_len >> 1; k++) {
+					#if USE_FRAME_BUFF
+					frame_buff[frame_sz++] = (uint8_t)(the_pixel >> 0);
+					frame_buff[frame_sz++] = (uint8_t)(the_pixel >> 8);
+					#else
+					tft.pushColor(the_pixel);
+					#endif
+					r += rle_len;
+				}
+			} else {
+				// lower color part
+				the_pixel = dptr[i] << 0;
+			}
+			continue;
+		}
+
+		// normal color part
+		#if USE_FRAME_BUFF
+		frame_buff[frame_sz++] = dptr[i];
+		#else
+		tft.pushColors(&dptr[i], 1);
+		#endif
+		r++;
 	}
 	return r;
 }
@@ -127,6 +178,8 @@ static int parse_bitblt(int ep, int rle) {
 
 	frame_sz = 0;
 
+	rle_len = rle_pos = 0;
+
 	load = bb->width * bb->height * 2/*RGB565*/;
 
 	if (bulkpos > sizeof ucmd->bblt) {
@@ -140,9 +193,16 @@ static int parse_bitblt(int ep, int rle) {
 			continue;
 		}
 
-		sz = min(sz, EPX_SIZE);
-		sz = USBDevice.recv(ep, bulkbuf, sz);
-		if (*bulkbuf != RPUSBDISP_DISPCMD_BITBLT) {
+		sz = min(sz, EPX_SIZE - bulkpos);
+		bulkpos += USBDevice.recv(ep, bulkbuf + bulkpos, sz);
+		if (load > bulkpos && bulkpos < EPX_SIZE) {
+			continue;
+		}
+		bulkpos = 0;
+
+		if (!rle && *bulkbuf != RPUSBDISP_DISPCMD_BITBLT
+		||   rle && *bulkbuf != RPUSBDISP_DISPCMD_BITBLT_RLE
+		) {
 			printf("BB SYNC ERR #0\r\n");
 			break;
 		}
