@@ -71,11 +71,16 @@ int USBDISP_::getDescriptor(USBSetup& setup)
 	return total;
 }
 
-#define USE_FRAME_BUFF 1
+/*
+ * #.1 USE_FRAME_BUFF=1 not stable.
+ *     RAM left for backbuf are too small.
+ */
+#define USE_FRAME_BUFF 0
 #if USE_FRAME_BUFF
 static __attribute__((__aligned__(4))) uint8_t frame_buff[ TFT_WIDTH * TFT_HEIGHT * 2 ] ;
 #endif
 static int frame_pos = 0; // in bytes
+static int frame_sz  = 0; // in bytes
 
 static union {
 	#define LINEBUF_SZ (TFT_HEIGHT << 1)
@@ -90,20 +95,63 @@ static union {
 static uint8_t* const bulkbuf = &ucmd->epbuf[0];
 static int bulkpos = 0;
 
+static RingBufferN<32768> backbuf;
+
+static uint32_t usbBackRead(uint32_t ep, void *data, uint32_t len) {
+	uint8_t* dptr = (uint8_t*)data;
+	unsigned sz;
+	int i = 0;
+
+	if (sz = backbuf.available()) {
+		for (; i < len && i < sz; i++) {
+			dptr[i] = backbuf.read_char();
+		}
+	}
+
+	/*
+	sz = USBDevice.available(ep);
+	if (sz > len - i)
+		sz = len - i;
+	*/
+	sz = USBDevice.recv(ep, &dptr[i], len - i);
+	return sz + i;
+}
+
+static uint32_t usbBackPeek(uint32_t ep){
+	// #.2 Receive USB DATA when screen drawing,
+	// or else will missing USB DATA.
+	uint32_t av = USBDevice.available(ep);
+	for (int i = 0; i < av; i++) {
+		uint8_t c = USBDevice.recv(ep);
+		backbuf.store_char(c);
+	}
+	return av;
+}
+
+static unsigned usbBackAvail(int ep) {
+	return backbuf.available() + USBDevice.available(ep);
+}
+
 static int rle_len, rle_pos;
 
+// return pixel data bytes processed,
+// unprocessed/next-action data will save into backbuf.
 static int bitblt_append_data(int rle, uint8_t* dptr, int sz) {
 	static int rle_comn = 0;
 	static uint16_t the_pixel;
 	int i, r = 0;
 
 	if (!rle) {
+		int rsz; /* required size */
+
+		rsz = (frame_pos + sz > frame_sz)? frame_sz - frame_pos: sz;
+
 		#if USE_FRAME_BUFF
-		memcpy(&frame_buff[frame_pos], dptr, sz);
-		frame_pos += sz;
+		memcpy(&frame_buff[frame_pos], dptr, rsz);
+		frame_pos += rsz;
 		#else
 
-		for (i = 0; i < sz; i++) {
+		for (i = 0; i < rsz; i++) {
 			if (++frame_pos & 0x1U) {
 				the_pixel  = dptr[i] << 0;
 			} else {
@@ -111,11 +159,18 @@ static int bitblt_append_data(int rle, uint8_t* dptr, int sz) {
 				tft.pushColor(the_pixel);
 			}
 		}
-
 		#endif
-		return sz;
+
+		/* remain chars unprocessed */
+		if (rsz != sz) {
+			for (i = rsz; i < sz; i++) {
+				backbuf.store_char(dptr[i]);
+			}
+		}
+		return rsz;
 	}
 
+	// decompress RLE DATA
 	for (i = 0; i < sz; i++) {
 		if (rle_pos >= rle_len) {
 			// rle header char
@@ -125,7 +180,7 @@ static int bitblt_append_data(int rle, uint8_t* dptr, int sz) {
 			rle_pos = 0;
 			if (rle_comn) {
 				// common section only have a single color
-				// 2 Bytes (RGB565)
+				// 2 Bytes (BGR565)
 				rle_pos = rle_len - 2;
 			}
 			continue;
@@ -139,15 +194,16 @@ static int bitblt_append_data(int rle, uint8_t* dptr, int sz) {
 				// upper color part
 				the_pixel |= dptr[i] << 8;
 
+				#if USE_FRAME_BUFF
 				for (int k = 0; k < rle_len >> 1; k++) {
-					#if USE_FRAME_BUFF
 					frame_buff[frame_pos++] = (uint8_t)(the_pixel >> 0);
 					frame_buff[frame_pos++] = (uint8_t)(the_pixel >> 8);
-					#else
-					tft.pushColor(the_pixel);
-					#endif
-					r += rle_len;
 				}
+				#else
+				tft.pushColor(the_pixel, rle_len >> 1);
+				frame_pos += rle_len;
+				#endif
+				r += rle_len;
 			} else {
 				// lower color part
 				the_pixel = dptr[i] << 0;
@@ -159,9 +215,23 @@ static int bitblt_append_data(int rle, uint8_t* dptr, int sz) {
 		#if USE_FRAME_BUFF
 		frame_buff[frame_pos++] = dptr[i];
 		#else
-		tft.pushColors(&dptr[i], 1);
+		if (++frame_pos & 0x1U) {
+			the_pixel  = dptr[i] << 0;
+		} else {
+			the_pixel |= dptr[i] << 8;
+			tft.pushColor(the_pixel);
+		}
 		#endif
 		r++;
+
+		if (frame_pos >= frame_sz) {
+			break;
+		}
+	}
+
+	/* remain chars unprocessed */
+	for (; i < sz; i++) {
+		backbuf.store_char(dptr[i]);
 	}
 	return r;
 }
@@ -181,6 +251,7 @@ static int parse_bitblt(int ep, int rle) {
 	rle_len = rle_pos = 0;
 
 	load = bb->width * bb->height * 2/*RGB565*/;
+	frame_sz = load;
 
 	if (bulkpos > sizeof ucmd->bblt) {
 		sz = bulkpos - sizeof ucmd->bblt;
@@ -188,13 +259,13 @@ static int parse_bitblt(int ep, int rle) {
 		load -= sz;
 	}
 
-	for (; load;) {
-		if ((sz = USBDevice.available(ep)) == 0) {
+	for (bulkpos = 0; load;) {
+		if ((sz = usbBackAvail(ep)) == 0) {
 			continue;
 		}
 
 		sz = min(sz, EPX_SIZE - bulkpos);
-		bulkpos += USBDevice.recv(ep, bulkbuf + bulkpos, sz);
+		bulkpos += usbBackRead(ep, bulkbuf + bulkpos, sz);
 		if (load > bulkpos && bulkpos < EPX_SIZE) {
 			continue;
 		}
@@ -225,12 +296,9 @@ static int parse_bitblt(int ep, int rle) {
 			*ptr = ptr[1];
 			ptr[1] = pix;
 		}
+
 		tft.pushColors((uint16_t*)&frame_buff[sz], bb->width, false);
-		if (USBDevice.available(ep)) {
-			// This ignore remain colors
-			// make USB Host more stable
-			// break;
-		}
+		usbBackPeek(ep);
 	}
 	#endif
 	tft.endWrite();
@@ -239,7 +307,7 @@ static int parse_bitblt(int ep, int rle) {
 		usbdisp_status->display_status &= ~RPUSBDISP_DISPLAY_STATUS_DIRTY_FLAG;
 	}
 
-	// Screen image are out of sync from power up
+	// report display status
 	USBDevice.send(ep + 1, usbdisp_status, sizeof usbdisp_status);
 	return 0;
 }
@@ -248,9 +316,9 @@ int USBDISP_::eventRun(void) {
 	uint32_t av;
 	int mode_rle;
 
-	while ((av = USBDevice.available(pluggedEndpoint))) {
+	while ((av = usbBackAvail(pluggedEndpoint))) {
 		av = min(av, EPX_SIZE);
-		USBDevice.recv(pluggedEndpoint, bulkbuf + bulkpos, av);
+		usbBackRead(pluggedEndpoint, bulkbuf + bulkpos, av);
 		bulkpos += av;
 
 		if (!(*bulkbuf & RPUSBDISP_CMD_FLAG_START)) {
@@ -282,6 +350,10 @@ int USBDISP_::eventRun(void) {
 			break;
 		}
 	}
+
+	// Prevent missing USB DATA in the process
+	// for other things doing.
+	usbBackPeek(pluggedEndpoint);
 	return 0;
 }
 
