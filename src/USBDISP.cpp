@@ -132,23 +132,22 @@ static unsigned usbBackAvail(int ep) {
 	return backbuf.available() + USBDevice.available(ep);
 }
 
-static int rle_len, rle_pos;
+static volatile int rle_len, rle_pos;
 
 // return pixel data bytes processed,
 // unprocessed/next-action data will save into backbuf.
 static int bitblt_append_data(int rle, uint8_t* dptr, int sz) {
 	static int rle_comn = 0;
 	static uint16_t the_pixel;
-	int i, r = 0;
+	int i, rsz; /* required size */
 
 	if (!rle) {
-		int rsz; /* required size */
-
 		rsz = (frame_pos + sz > frame_sz)? frame_sz - frame_pos: sz;
 
 		#if USE_FRAME_BUFF
 		memcpy(&frame_buff[frame_pos], dptr, rsz);
 		frame_pos += rsz;
+		i = rsz;
 		#else
 
 		for (i = 0; i < rsz; i++) {
@@ -160,16 +159,10 @@ static int bitblt_append_data(int rle, uint8_t* dptr, int sz) {
 			}
 		}
 		#endif
-
-		/* remain chars unprocessed */
-		if (rsz != sz) {
-			for (i = rsz; i < sz; i++) {
-				backbuf.store_char(dptr[i]);
-			}
-		}
-		return rsz;
+		goto _remain;
 	}
 
+	rsz = 0;
 	// decompress RLE DATA
 	for (i = 0; i < sz; i++) {
 		if (frame_pos >= frame_sz) {
@@ -195,21 +188,21 @@ static int bitblt_append_data(int rle, uint8_t* dptr, int sz) {
 
 		if (rle_comn) {
 			if (rle_pos >= rle_len) {
-				// upper color part
+				// compressed upper part color
 				the_pixel |= dptr[i] << 8;
 
 				#if USE_FRAME_BUFF
 				for (int k = 0; k < rle_len >> 1; k++) {
-					frame_buff[frame_pos++] = (uint8_t)(the_pixel >> 0);
-					frame_buff[frame_pos++] = (uint8_t)(the_pixel >> 8);
+					*(uint16_t*)&frame_buff[frame_pos] = the_pixel;
+					frame_pos += 2;
 				}
 				#else
 				tft.pushColor(the_pixel, rle_len >> 1);
 				frame_pos += rle_len;
 				#endif
-				r += rle_len;
+				rsz += rle_len;
 			} else {
-				// lower color part
+				// compressed lower part color
 				the_pixel = dptr[i] << 0;
 			}
 			continue;
@@ -226,14 +219,19 @@ static int bitblt_append_data(int rle, uint8_t* dptr, int sz) {
 			tft.pushColor(the_pixel);
 		}
 		#endif
-		r++;
+		rsz++;
 	}
 
+_remain:
 	/* remain chars unprocessed */
-	for (; i < sz; i++) {
-		backbuf.store_char(dptr[i]);
+	if (i < sz) {
+		printf("M%d\r\n", sz - i);
+
+		for (; i < sz; i++) {
+			backbuf.store_char(dptr[i]);
+		}
 	}
-	return r;
+	return rsz;
 }
 
 static int parse_bitblt(int ep, int rle) {
