@@ -22,37 +22,72 @@
 #include <stdint.h>
 #include <Arduino.h>
 #include "USB/PluggableUSB.h"
+#include "rpusbdisp_protocol.h"
+#include "TFT_eSPI.h"
 
 #if defined(USBCON)
 
 // DISP 'Driver'
-#define USB_INTERFACE_DISP_CLASS     0xFF	/* Vendor Specific */
-#define USB_INTERFACE_DISP_SUBCLASS  0xFF	/* Vendor Specific */
-#define USB_INTERFACE_PROTOCOL_NONE  0
+#define USB_INTERFACE_DISP_CLASS		 0xFF	/* Vendor Specific */
+#define USB_INTERFACE_DISP_SUBCLASS	0xFF	/* Vendor Specific */
+#define USB_INTERFACE_PROTOCOL_NONE	0
 
 typedef struct 
 {
-  InterfaceDescriptor if_desc;
-  EndpointDescriptor  ep_dp;	/* Display Endpoint */
-  EndpointDescriptor  ep_st;	/* Status  Endpoint */
+	InterfaceDescriptor if_desc;
+	EndpointDescriptor	ep_dp;	/* Display Endpoint */
+	EndpointDescriptor	ep_st;	/* Status	Endpoint */
 } USBDISPDescriptor;
 
 class USBDISP_ : public PluggableUSBModule
 {
 public:
-  USBDISP_(void);
-  int begin(bool reverse = false);
-  int eventRun(void);
+	USBDISP_(void);
+	int begin(bool reverse = false);
+	int eventRun(void);
 protected:
-  // Implementation of the PluggableUSBModule
-  int getInterface(uint8_t* interfaceCount);
-  int getDescriptor(USBSetup& setup);
-  bool setup(USBSetup& setup);
+	// Implementation of the PluggableUSBModule
+	int getInterface(uint8_t* interfaceCount);
+	int getDescriptor(USBSetup& setup);
+	bool setup(USBSetup& setup);
+
+	// Save remain unprocessed data.
+	unsigned usbBackAvail(void);
+	uint32_t usbBackPeek(void);
+	uint32_t usbBackRead(void *data, uint32_t len);
+
+	int parseBitblt(int rle);
+	int bitbltAppendData(int rle, uint8_t* dptr, int sz);
 
 private:
-  uint32_t epType[2];
+	uint32_t epType[2];
 
-  uint8_t idle;
+	/*
+	 * #.1 USE_FRAME_BUFF=1 not stable.
+	 *     RAM left for backbuf are too small.
+	 */
+	#define USE_FRAME_BUFF 0
+	#if USE_FRAME_BUFF
+	__attribute__((__aligned__(4))) uint8_t frame_buff[ TFT_WIDTH * TFT_HEIGHT * 2 ];
+	#endif
+	volatile int frame_pos; // in bytes
+	int frame_sz; // in bytes
+
+	union {
+		#define LINEBUF_SZ (TFT_HEIGHT << 1)
+		uint8_t epbuf[LINEBUF_SZ];
+		rpusbdisp_disp_packet_header_t   hdr;
+		rpusbdisp_disp_fill_packet_t     fill;
+		rpusbdisp_disp_bitblt_packet_t   bblt;
+		rpusbdisp_disp_fillrect_packet_t rect;
+		rpusbdisp_disp_copyarea_packet_t copy;
+	} ucmd[1];
+	uint8_t* const bulkbuf;
+	volatile int bulkpos;
+
+	RingBufferN<32768> backbuf;
+
+	volatile int rle_len, rle_pos;
 };
 
 // Replacement for global singleton.

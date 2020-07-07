@@ -22,10 +22,7 @@
  */
 
 #include "USBDISP.h"
-#include "rpusbdisp_protocol.h"
-
 #include "SPI.h"
-#include "TFT_eSPI.h"
 
 // Use hardware SPI
 TFT_eSPI tft = TFT_eSPI();
@@ -77,38 +74,13 @@ int USBDISP_::getDescriptor(USBSetup& setup)
 	return total;
 }
 
-/*
- * #.1 USE_FRAME_BUFF=1 not stable.
- *     RAM left for backbuf are too small.
- */
-#define USE_FRAME_BUFF 0
-#if USE_FRAME_BUFF
-static __attribute__((__aligned__(4))) uint8_t frame_buff[ TFT_WIDTH * TFT_HEIGHT * 2 ] ;
-#endif
-static volatile int frame_pos = 0; // in bytes
-static int frame_sz  = 0; // in bytes
-
-static union {
-	#define LINEBUF_SZ (TFT_HEIGHT << 1)
-	uint8_t epbuf[LINEBUF_SZ];
-	rpusbdisp_disp_packet_header_t   hdr;
-	rpusbdisp_disp_fill_packet_t     fill;
-	rpusbdisp_disp_bitblt_packet_t   bblt;
-	rpusbdisp_disp_fillrect_packet_t rect;
-	rpusbdisp_disp_copyarea_packet_t copy;
-} ucmd[1];
-
-static uint8_t* const bulkbuf = &ucmd->epbuf[0];
-static volatile int bulkpos = 0;
-
-static RingBufferN<32768> backbuf;
-
-static uint32_t usbBackRead(uint32_t ep, void *data, uint32_t len) {
+uint32_t USBDISP_::usbBackRead(void *data, uint32_t len) {
+	uint8_t& ep = pluggedEndpoint;
 	uint8_t* dptr = (uint8_t*)data;
 	unsigned sz;
 	int i = 0;
 
-	if (sz = backbuf.available()) {
+	if ((sz = backbuf.available())) {
 		for (; i < len && i < sz; i++) {
 			dptr[i] = backbuf.read_char();
 		}
@@ -123,7 +95,8 @@ static uint32_t usbBackRead(uint32_t ep, void *data, uint32_t len) {
 	return sz + i;
 }
 
-static uint32_t usbBackPeek(uint32_t ep){
+uint32_t USBDISP_::usbBackPeek(void) {
+	uint8_t& ep = pluggedEndpoint;
 	// #.2 Receive USB DATA when screen drawing,
 	// or else will missing USB DATA.
 	uint32_t av = USBDevice.available(ep);
@@ -134,15 +107,14 @@ static uint32_t usbBackPeek(uint32_t ep){
 	return av;
 }
 
-static unsigned usbBackAvail(int ep) {
+unsigned USBDISP_::usbBackAvail(void) {
+	uint8_t& ep = pluggedEndpoint;
 	return backbuf.available() + USBDevice.available(ep);
 }
 
-static volatile int rle_len, rle_pos;
-
 // return pixel data bytes processed,
 // unprocessed/next-action data will save into backbuf.
-static int bitblt_append_data(int rle, uint8_t* dptr, int sz) {
+int USBDISP_::bitbltAppendData(int rle, uint8_t* dptr, int sz) {
 	static int rle_comn = 0;
 	static uint16_t the_pixel;
 	int i, rsz; /* required size */
@@ -240,9 +212,10 @@ _remain:
 	return rsz;
 }
 
-static int parse_bitblt(int ep, int rle) {
+int USBDISP_::parseBitblt(int rle) {
 	static rpusbdisp_disp_bitblt_packet_t bb[1];
 	unsigned load;
+	uint8_t& ep = pluggedEndpoint;
 	/*
 	#define TIMEOUT_MAX 10000000
 	volatile unsigned timeout = TIMEOUT_MAX;
@@ -262,17 +235,17 @@ static int parse_bitblt(int ep, int rle) {
 
 	if (bulkpos > sizeof ucmd->bblt) {
 		sz = bulkpos - sizeof ucmd->bblt;
-		sz = bitblt_append_data(rle, &bulkbuf[sizeof ucmd->bblt], sz);
+		sz = bitbltAppendData(rle, &bulkbuf[sizeof ucmd->bblt], sz);
 		load -= sz;
 	}
 
 	for (bulkpos = 0; load;) {
-		if ((sz = usbBackAvail(ep)) == 0) {
+		if ((sz = usbBackAvail()) == 0) {
 			continue;
 		}
 
 		sz = min(sz, EPX_SIZE - bulkpos);
-		bulkpos += usbBackRead(ep, bulkbuf + bulkpos, sz);
+		bulkpos += usbBackRead(bulkbuf + bulkpos, sz);
 		/*
 		// Bug, will block the USB receiving
 		if (--timeout != 0 && bulkpos < EPX_SIZE) {
@@ -291,7 +264,7 @@ static int parse_bitblt(int ep, int rle) {
 
 		// skip header
 		--sz;
-		sz = bitblt_append_data(rle, &bulkbuf[1], sz);
+		sz = bitbltAppendData(rle, &bulkbuf[1], sz);
 
 		load -= sz;
 	}
@@ -311,7 +284,7 @@ static int parse_bitblt(int ep, int rle) {
 		}
 
 		tft.pushColors((uint16_t*)&frame_buff[sz], bb->width, false);
-		usbBackPeek(ep);
+		usbBackPeek();
 	}
 	#endif
 	tft.endWrite();
@@ -338,9 +311,9 @@ int USBDISP_::eventRun(void) {
 	*/
 	bulkpos = 0;
 _repeat:
-	if /*while*/ ((av = usbBackAvail(pluggedEndpoint))) {
+	if /*while*/ ((av = usbBackAvail())) {
 		av = min(av, EPX_SIZE - bulkpos);
-		av = usbBackRead(pluggedEndpoint, bulkbuf + bulkpos, av);
+		av = usbBackRead(bulkbuf + bulkpos, av);
 		bulkpos += av;
 		__DMB();
 
@@ -366,7 +339,7 @@ _repeat:
 				printf("<%d\r\n", bulkpos);
 				goto _repeat;
 			}
-			parse_bitblt(pluggedEndpoint, mode_rle);
+			parseBitblt(mode_rle);
 			break;
 
 		case RPUSBDISP_DISPCMD_RECT:
@@ -383,7 +356,7 @@ _repeat:
 
 	// Prevent missing USB DATA in the process
 	// for other things doing.
-	usbBackPeek(pluggedEndpoint);
+	usbBackPeek();
 	return 0;
 }
 
@@ -392,22 +365,11 @@ bool USBDISP_::setup(USBSetup& setup)
 	if (pluggedInterface != setup.wIndex) {
 		return false;
 	}
-
-	uint8_t request = setup.bRequest;
-	uint8_t requestType = setup.bmRequestType;
-
-	if (requestType == REQUEST_DEVICETOHOST_CLASS_INTERFACE)
-	{
-	}
-
-	if (requestType == REQUEST_HOSTTODEVICE_CLASS_INTERFACE)
-	{
-	}
-
 	return false;
 }
 
-USBDISP_::USBDISP_(void) : PluggableUSBModule(2, 1, epType), idle(1)
+USBDISP_::USBDISP_(void) : PluggableUSBModule(2, 1, epType),
+                           bulkbuf(&ucmd->epbuf[0]), bulkpos(0)
 {
 	epType[0] = USB_ENDPOINT_TYPE_BULK      | USB_ENDPOINT_OUT(0);
 	epType[1] = USB_ENDPOINT_TYPE_INTERRUPT | USB_ENDPOINT_IN(0);
