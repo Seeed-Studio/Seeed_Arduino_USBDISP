@@ -41,7 +41,7 @@ class USBDISP_ : public PluggableUSBModule
 {
 public:
   USBDISP_(void);
-  int begin(void);
+  int begin(bool reverse = false);
   int eventRun(void);
 protected:
   // Implementation of the PluggableUSBModule

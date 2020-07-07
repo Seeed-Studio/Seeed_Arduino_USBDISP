@@ -25,7 +25,7 @@ void setup() {
 	*/
 
 	// Should after SerialUSB ready.
-	USBDISP().begin();
+	USBDISP().begin(true);
 }
 
 void loop() {

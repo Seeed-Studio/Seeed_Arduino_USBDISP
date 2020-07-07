@@ -414,7 +414,7 @@ USBDISP_::USBDISP_(void) : PluggableUSBModule(2, 1, epType), idle(1)
 	PluggableUSB().plug(this);
 }
 
-int USBDISP_::begin(void)
+int USBDISP_::begin(bool reverse)
 {
 	// Initial notify, not works yet
 	// Screen image are out of sync from power up
@@ -423,7 +423,7 @@ int USBDISP_::begin(void)
 	tft.init();
 	// Plot with 90 deg. clockwise rotation
 	// Required a 320x240 screen, not a 240x320.
-	tft.setRotation(1);
+	tft.setRotation(reverse? 3: 1);
 	return 0;
 }
 
