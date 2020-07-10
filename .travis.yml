@@ -35,14 +35,14 @@ script:
     - rm -rf $HOME/Arduino/libraries/*
     - installLibrary Seeed-Studio/Seeed_Arduino_USBDISP
     - export BOARD=Seeeduino:samd:seeed_wio_terminal
-    - buildExampleSketch WioTerminal-ADS1115;
+    - buildExampleSketch NullFunctional;
 
     - echo "*************************************USBDisplayAndMouseControl*********************************************"
     - rm -rf $HOME/Arduino/libraries/*
     - installLibrary Seeed-Studio/Seeed_Arduino_USBDISP
-    - installLibrary  arduino-libraries/Mouse
+    - installLibrary arduino-libraries/Mouse
     - export BOARD=Seeeduino:samd:seeed_wio_terminal
-    - buildExampleSketch WioTerminal_BackLight;
+    - buildExampleSketch USBDisplayAndMouseControl;
 
 notifications:
   webhooks:
