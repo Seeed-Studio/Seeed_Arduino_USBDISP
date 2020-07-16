@@ -40,8 +40,8 @@
  *    Press the WIO_5S_PRESS --------------------> Click the left mouse button
  *    Press the BUTTON_3 ------------------------> Click the right mouse button
  *    Press the BUTTON_2 ------------------------> Switch the speed of mouse moving
- *    Press the WIO_5S_PRESS and WIO_5S_UP ------> Up roll
- *    Press the WIO_5S_PRESS and WIO_5S_DOWN ----> Down roll
+ *    Press the BUTTON_1 and WIO_5S_UP ----------> Up roll
+ *    Press the BUTTON_1 and WIO_5S_DOWN --------> Down roll
  *
  * Some tips:
  * 1. If your PC unables to recognize USB device leading the Wio Terminal can’t work.
@@ -61,10 +61,10 @@ const int upButton          = WIO_5S_UP;
 const int downButton        = WIO_5S_DOWN;
 const int leftButton        = WIO_5S_LEFT;
 const int rightButton       = WIO_5S_RIGHT;
-const int mouseWheel        = WIO_5S_PRESS;
 const int mouseBttonLeft    = WIO_5S_PRESS;
 const int mouseBttonRight   = BUTTON_3;
 const int switchRangeButton = BUTTON_2;
+const int mouseWheel        = BUTTON_1;
 
 // Output range of X or Y movement; affects movement speed
 int range = 6;
