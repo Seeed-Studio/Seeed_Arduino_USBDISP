@@ -298,6 +298,74 @@ int USBDISP_::parseBitblt(int rle) {
 	return 0;
 }
 
+int USBDISP_::parseFill(void) {
+	static rpusbdisp_disp_fill_packet_t Fill[1];
+	uint8_t& ep = pluggedEndpoint;
+
+	*Fill = ucmd->fill;
+
+	tft.startWrite();
+	tft.fillScreen(Fill->color_565);
+	tft.endWrite();
+
+	if (Fill->header.cmd_flag & RPUSBDISP_CMD_FLAG_CLEARDITY) {
+		usbdisp_status->display_status &= ~RPUSBDISP_DISPLAY_STATUS_DIRTY_FLAG;
+	}
+
+	// report display status
+	USBDevice.send(ep + 1, usbdisp_status, sizeof usbdisp_status);
+	return 0;
+}
+
+int USBDISP_::parseFillRect(void) {
+	static rpusbdisp_disp_fillrect_packet_t Rect[1];
+	uint8_t& ep = pluggedEndpoint;
+
+	*Rect = ucmd->rect;
+
+	tft.startWrite();
+	tft.fillRect(Rect->left, Rect->top, Rect->right - Rect->left, Rect->bottom - Rect->top, Rect->color_565);
+	tft.endWrite();
+
+	if (Rect->header.cmd_flag & RPUSBDISP_CMD_FLAG_CLEARDITY) {
+		usbdisp_status->display_status &= ~RPUSBDISP_DISPLAY_STATUS_DIRTY_FLAG;
+	}
+
+	// report display status
+	USBDevice.send(ep + 1, usbdisp_status, sizeof usbdisp_status);
+	return 0;
+}
+
+int USBDISP_::parseCopyArea(void) {
+	static rpusbdisp_disp_copyarea_packet_t CopyArea[1];
+	uint8_t& ep = pluggedEndpoint;
+
+	uint16_t *data;
+
+	*CopyArea = ucmd->copy;
+
+	data = (uint16_t *) malloc(CopyArea->width * CopyArea->height * sizeof(uint16_t));
+
+	// Read a block of pixels to a data buffer, buffer is 16 bit and the array size must be at least w * h
+    tft.readRect(CopyArea->sx, CopyArea->sy, CopyArea->width, CopyArea->height, (uint16_t *)data);
+
+	tft.startWrite();
+    // Write a block of pixels to the screen
+    tft.pushRect(CopyArea->dx, CopyArea->dy, CopyArea->width, CopyArea->height, (uint16_t *)data);
+	tft.endWrite();
+
+	if (CopyArea->header.cmd_flag & RPUSBDISP_CMD_FLAG_CLEARDITY) {
+		usbdisp_status->display_status &= ~RPUSBDISP_DISPLAY_STATUS_DIRTY_FLAG;
+	}
+
+	// report display status
+	USBDevice.send(ep + 1, usbdisp_status, sizeof usbdisp_status);
+
+	free(data);
+
+	return 0;
+}
+
 int USBDISP_::eventRun(void) {
 	uint32_t av;
 	int mode_rle;
@@ -322,35 +390,34 @@ _repeat:
 			bulkpos = 0;
 			goto _repeat;
 		}
-
 		mode_rle = 0;
 		switch (*bulkbuf & RPUSBDISP_CMD_MASK) {
-		case RPUSBDISP_DISPCMD_NOPE:
-		case RPUSBDISP_DISPCMD_FILL:
-			printf("F\r\n");
-			break;
-
-		case RPUSBDISP_DISPCMD_BITBLT_RLE:
-			mode_rle = 1;
-			/* intentional fall-through */
-		case RPUSBDISP_DISPCMD_BITBLT:
-			/* #.4 */
-			if (bulkpos < sizeof ucmd->bblt) {
-				printf("<%d\r\n", bulkpos);
-				goto _repeat;
+			case RPUSBDISP_DISPCMD_NOPE:
+				break;
+			case RPUSBDISP_DISPCMD_FILL:
+				parseFill();
+				break;
+			case RPUSBDISP_DISPCMD_BITBLT_RLE:
+				mode_rle = 1;
+				/* intentional fall-through */
+			case RPUSBDISP_DISPCMD_BITBLT:
+				/* #.4 */
+				if (bulkpos < sizeof ucmd->bblt) {
+					printf("<%d\r\n", bulkpos);
+					goto _repeat;
+				}
+				parseBitblt(mode_rle);
+				break;
+			case RPUSBDISP_DISPCMD_RECT:
+				parseFillRect();
+				break;
+			case RPUSBDISP_DISPCMD_COPY_AREA:
+				parseCopyArea();
+				break;
+			default:
+				printf("PE#2:%d\r\n", *bulkbuf);
+				break;
 			}
-			parseBitblt(mode_rle);
-			break;
-
-		case RPUSBDISP_DISPCMD_RECT:
-		case RPUSBDISP_DISPCMD_COPY_AREA:
-			printf("R\r\n");
-			break;
-
-		default:
-			printf("PE#2:%d\r\n", *bulkbuf);
-			break;
-		}
 		bulkpos = 0;
 	}
 
