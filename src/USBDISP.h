@@ -59,6 +59,9 @@ protected:
 	int parseBitblt(int rle);
 	int bitbltAppendData(int rle, uint8_t* dptr, int sz);
 
+	int parseFill(void);
+	int parseFillRect(void);
+	int parseCopyArea(void);
 private:
 	uint32_t epType[2];
 
