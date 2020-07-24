@@ -27,6 +27,8 @@
 // Use hardware SPI
 TFT_eSPI tft = TFT_eSPI();
 
+bool USBDISP_::parseDrawFunction;
+
 #if defined(USBCON)
 
 static rpusbdisp_status_normal_packet_t usbdisp_status[1] = {
@@ -394,9 +396,6 @@ _repeat:
 		switch (*bulkbuf & RPUSBDISP_CMD_MASK) {
 			case RPUSBDISP_DISPCMD_NOPE:
 				break;
-			case RPUSBDISP_DISPCMD_FILL:
-				parseFill();
-				break;
 			case RPUSBDISP_DISPCMD_BITBLT_RLE:
 				mode_rle = 1;
 				/* intentional fall-through */
@@ -408,11 +407,17 @@ _repeat:
 				}
 				parseBitblt(mode_rle);
 				break;
+			case RPUSBDISP_DISPCMD_FILL:
+				if(USBDISP_::parseDrawFunction)
+					parseFill();
+				break;
 			case RPUSBDISP_DISPCMD_RECT:
-				parseFillRect();
+				if(USBDISP_::parseDrawFunction)
+					parseFillRect();
 				break;
 			case RPUSBDISP_DISPCMD_COPY_AREA:
-				parseCopyArea();
+				if(USBDISP_::parseDrawFunction)
+					parseCopyArea();
 				break;
 			default:
 				printf("PE#2:%d\r\n", *bulkbuf);
@@ -443,8 +448,14 @@ USBDISP_::USBDISP_(void) : PluggableUSBModule(2, 1, epType),
 	PluggableUSB().plug(this);
 }
 
-int USBDISP_::begin(bool reverse)
+int USBDISP_::begin(bool reverse, bool usermode)
 {
+	// on/off the UserMode drawing function.
+	if(usermode)
+		USBDISP_::parseDrawFunction = true;
+	else
+		USBDISP_::parseDrawFunction = false;
+	
 	// Initial notify, not works yet
 	// Screen image are out of sync from power up
 	USBDevice.send(pluggedEndpoint + 1, usbdisp_status, sizeof usbdisp_status);

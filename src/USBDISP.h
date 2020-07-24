@@ -28,7 +28,7 @@
 #if defined(USBCON)
 
 // DISP 'Driver'
-#define USB_INTERFACE_DISP_CLASS		 0xFF	/* Vendor Specific */
+#define USB_INTERFACE_DISP_CLASS	0xFF	/* Vendor Specific */
 #define USB_INTERFACE_DISP_SUBCLASS	0xFF	/* Vendor Specific */
 #define USB_INTERFACE_PROTOCOL_NONE	0
 
@@ -42,8 +42,10 @@ typedef struct
 class USBDISP_ : public PluggableUSBModule
 {
 public:
+	static bool parseDrawFunction;
+	
 	USBDISP_(void);
-	int begin(bool reverse = false);
+	int begin(bool reverse = false, bool usermode = false);
 	int eventRun(void);
 protected:
 	// Implementation of the PluggableUSBModule
