@@ -1,5 +1,5 @@
 /*
- * WioTerminal_USBDisplayAndMouseControl.ino
+ * USBDisplayAndMouseControl.ino
  *
  * A demo for Wio Terminal to enumerate a USB Display Device and simulate mouse by buttons.
  * It is used as a raspberry PI monitor to display the desktop and mouse control.
@@ -50,6 +50,12 @@
  *
  * You can know more about the Wio Terminal from: https://wiki.seeedstudio.com/Wio-Terminal-Getting-Started/
  * If you have any questions, you can leave a message on the forum: https://forum.seeedstudio.com
+ * 
+ * Note:
+ *    The USBDISP().begin(bool reverse, bool usermode) function has two parameters.
+ *    In our demo, the default setting is USBDISP().begin(true)
+ *    If you want to parse drawing function in usermode-sdk or python-demo(seeed-linux-usbdisp),
+ *    you need to set it as USBDISP().begin(true, true)
  */
 
 #define SERHD SERIAL_PORT_HARDWARE
@@ -108,6 +114,7 @@ void setup() {
     */
 
     // Should after SerialUSB ready.
+	// Please see the note above.
     USBDISP().begin(true);
 }
 
